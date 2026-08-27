@@ -1,0 +1,6 @@
+{
+  "name": "TVm",
+  "description": "Premium Google TV & Android TV Control Center with 3D physical remote, local Wi-Fi pairing, touch/gyro controls, and TV Remote v2 protocol engine",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,24 @@
+{
+  "name": "TVm: Google TV & Android TV Control Center",
+  "short_name": "TVm",
+  "description": "Premium 3D physical remote and control center for Google TV & Android TV devices over local Wi-Fi",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0d1017",
+  "theme_color": "#161a23",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "/logo.png",
+      "sizes": "192x192 512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icon.svg",
+      "sizes": "192x192 512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
