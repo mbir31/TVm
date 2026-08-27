@@ -17,18 +17,33 @@ export interface PairingEvents {
   onLog: (level: 'info' | 'warn' | 'error' | 'debug', msg: string, data?: Record<string, unknown>) => void;
 }
 
+export enum PairingStage {
+  IDLE = 'IDLE',
+  WAITING_REQUEST_ACK = 'WAITING_REQUEST_ACK',
+  WAITING_CONFIG_ACK = 'WAITING_CONFIG_ACK',
+  WAITING_FOR_USER_PIN = 'WAITING_FOR_USER_PIN',
+  WAITING_SECRET_ACK = 'WAITING_SECRET_ACK',
+  COMPLETED = 'COMPLETED',
+  FAILED = 'FAILED',
+}
+
 export class PairingService {
   private certManager: CertificateManager;
   private currentSocket: tls.TLSSocket | null = null;
   private activeTv: TVDevice | null = null;
   private activeClientCerts: TVCertificatePair | null = null;
   private serverCertPem: string | null = null;
+  private serverCertDer: Buffer | null = null;
   private pendingResolve: ((success: boolean) => void) | null = null;
   private pendingReject: ((err: Error) => void) | null = null;
-  private isWaitingForPin = false;
+  private stage: PairingStage = PairingStage.IDLE;
 
   constructor(certManager: CertificateManager) {
     this.certManager = certManager;
+  }
+
+  public getStage(): PairingStage {
+    return this.stage;
   }
 
   /**
@@ -37,6 +52,7 @@ export class PairingService {
   public async startPairing(tv: TVDevice, events: PairingEvents): Promise<boolean> {
     this.cleanup();
     this.activeTv = tv;
+    this.stage = PairingStage.IDLE;
 
     events.onLog('info', `[PairingService] Initiating TLS pairing handshake with ${tv.name} (${tv.host}:${tv.pairingPort || PAIRING_PORT})`);
     events.onStateChange(ConnectionState.PAIRING, `Connecting to pairing service on ${tv.name}...`);
@@ -55,7 +71,7 @@ export class PairingService {
         cert: this.activeClientCerts!.certPem,
         key: this.activeClientCerts!.privateKeyPem,
         minVersion: 'TLSv1.2',
-        timeout: 12000,
+        timeout: 15000,
       };
 
       try {
@@ -65,12 +81,14 @@ export class PairingService {
           // Extract TV's peer certificate
           const peerCert = socket.getPeerCertificate(true);
           if (peerCert && peerCert.raw) {
+            this.serverCertDer = peerCert.raw;
             this.serverCertPem = `-----BEGIN CERTIFICATE-----\n${peerCert.raw.toString('base64').match(/.{1,64}/g)?.join('\n')}\n-----END CERTIFICATE-----`;
             events.onLog('debug', '[PairingService] Extracted TV peer certificate for cryptographic verification');
           }
 
           // Step 1: Send PairingRequest
-          events.onLog('debug', '[PairingService] Sending PairingRequest protobuf message');
+          this.stage = PairingStage.WAITING_REQUEST_ACK;
+          events.onLog('debug', '[PairingService] Sending PairingRequest (service: TVm, client: TVm Controller)');
           const pairingReq = ATVRemoteV2Messages.buildPairingRequest('TVm', 'TVm Controller');
           socket.write(pairingReq);
         });
@@ -83,17 +101,10 @@ export class PairingService {
           incomingBuffer = Buffer.concat([incomingBuffer, chunk]);
 
           try {
-            // Android TV Remote packets are length-delimited with varint length prefix
-            const reader = new ProtobufReader(incomingBuffer);
-            if (!reader.hasMore()) return;
+            const { packets, remaining } = ProtobufReader.unframePackets(incomingBuffer);
+            incomingBuffer = remaining;
 
-            const length = Number(reader.readVarint());
-            const totalRequired = incomingBuffer.length - (incomingBuffer.length - reader['offset']) + length;
-
-            if (incomingBuffer.length >= totalRequired) {
-              const payload = incomingBuffer.slice(reader['offset'], reader['offset'] + length);
-              incomingBuffer = incomingBuffer.slice(reader['offset'] + length);
-
+            for (const payload of packets) {
               this.handlePairingPacket(payload, socket, events);
             }
           } catch (err) {
@@ -118,9 +129,9 @@ export class PairingService {
         });
 
         socket.on('close', () => {
-          events.onLog('debug', '[PairingService] Pairing socket closed');
-          if (this.isWaitingForPin) {
-            // Do not fail immediately if waiting for user PIN entry
+          events.onLog('debug', `[PairingService] Pairing socket closed (current stage: ${this.stage})`);
+          if (this.stage === PairingStage.WAITING_FOR_USER_PIN) {
+            // Keep status message until user enters PIN or cancels
           }
         });
 
@@ -138,45 +149,70 @@ export class PairingService {
     const payloadReader = new ProtobufReader(payload);
     const fields = payloadReader.readFields();
 
-    events.onLog('debug', `[PairingService] Received pairing response with ${fields.length} fields`);
+    const statusField = fields.find(f => f.fieldNumber === 2);
+    const status = statusField?.varintValue !== undefined ? Number(statusField.varintValue) : 1;
 
-    // In Android TV Remote v2 pairing flow:
-    // If field 2 (status) is STATUS_OK:
-    // 1. After PairingRequest -> Send PairingConfiguration
-    // 2. After PairingConfigurationAck -> The TV is displaying the PIN code! Prompt the user.
+    events.onLog('debug', `[PairingService] Received pairing response at stage [${this.stage}] (status: ${status}, ${fields.length} fields)`);
 
-    if (!this.isWaitingForPin) {
-      // Send PairingConfiguration to trigger PIN code display on the TV
-      events.onLog('info', '[PairingService] Sending PairingConfiguration (6-digit alphanumeric/hex)');
-      const configMsg = ATVRemoteV2Messages.buildPairingConfiguration(1, 6);
-      socket.write(configMsg);
-
-      this.isWaitingForPin = true;
-      events.onStateChange(ConnectionState.PAIRING_CODE_REQUIRED, `Enter the 6-digit code shown on ${this.activeTv?.name}`);
-      if (this.activeTv) {
-        events.onPinPrompt(this.activeTv);
-      }
-    } else {
-      // This is the PairingSecretAck response after sending the PIN challenge!
-      events.onLog('info', '[PairingService] Received PairingSecretAck from TV');
-      const statusField = fields.find(f => f.fieldNumber === 2);
-      const status = statusField?.varintValue ? Number(statusField.varintValue) : 1;
-
-      if (status === 1) { // STATUS_OK
-        events.onLog('info', `[PairingService] Pairing SUCCESS for TV: ${this.activeTv?.name}`);
-        if (this.activeTv && this.activeClientCerts) {
-          this.certManager.saveDeviceCredentials(this.activeTv.id, this.activeClientCerts, this.serverCertPem || undefined);
-          events.onStateChange(ConnectionState.PAIRED, `Successfully paired with ${this.activeTv.name}`);
-          events.onPairingSuccess(this.activeTv, this.activeClientCerts);
-        }
-        if (this.pendingResolve) this.pendingResolve(true);
-      } else {
-        events.onLog('error', `[PairingService] Invalid pairing PIN or configuration error (status: ${status})`);
-        events.onStateChange(ConnectionState.PAIRING_FAILED, 'Invalid pairing PIN entered. Please try again.');
-        if (this.activeTv) events.onPairingError(this.activeTv, 'Incorrect PIN or pairing expired');
-        if (this.pendingResolve) this.pendingResolve(false);
-      }
+    if (status !== 1 && status !== 0) {
+      // Non-OK status from TV
+      events.onLog('error', `[PairingService] TV returned error status: ${status}`);
+      events.onStateChange(ConnectionState.PAIRING_FAILED, `Pairing failed: TV reported error (${status})`);
+      if (this.activeTv) events.onPairingError(this.activeTv, `Pairing error code: ${status}`);
+      this.stage = PairingStage.FAILED;
+      if (this.pendingResolve) this.pendingResolve(false);
       this.cleanup();
+      return;
+    }
+
+    switch (this.stage) {
+      case PairingStage.WAITING_REQUEST_ACK: {
+        // Step 2 -> Step 3: We received PairingRequestAck. Now send PairingConfiguration to tell TV to show PIN.
+        events.onLog('info', '[PairingService] Received PairingRequestAck -> Sending PairingConfiguration (HEXADECIMAL, 6-digit)');
+        this.stage = PairingStage.WAITING_CONFIG_ACK;
+        const configMsg = ATVRemoteV2Messages.buildPairingConfiguration(1, 6);
+        socket.write(configMsg);
+        break;
+      }
+
+      case PairingStage.WAITING_CONFIG_ACK: {
+        // Step 4: We received PairingConfigurationAck from the TV!
+        // The TV is now actively displaying the 6-character PIN on its screen!
+        events.onLog('info', `[PairingService] Received PairingConfigurationAck! TV is displaying PIN code on screen.`);
+        this.stage = PairingStage.WAITING_FOR_USER_PIN;
+        events.onStateChange(ConnectionState.PAIRING_CODE_REQUIRED, `Enter the 6-digit code shown on ${this.activeTv?.name}`);
+        if (this.activeTv) {
+          events.onPinPrompt(this.activeTv);
+        }
+        break;
+      }
+
+      case PairingStage.WAITING_SECRET_ACK: {
+        // Step 6: We received PairingSecretAck after submitting the challenge!
+        events.onLog('info', `[PairingService] Received PairingSecretAck from TV (status: ${status})`);
+        if (status === 1 || status === 0) {
+          this.stage = PairingStage.COMPLETED;
+          events.onLog('info', `[PairingService] Pairing SUCCESS for TV: ${this.activeTv?.name}`);
+          if (this.activeTv && this.activeClientCerts) {
+            this.certManager.saveDeviceCredentials(this.activeTv.id, this.activeClientCerts, this.serverCertPem || undefined);
+            events.onStateChange(ConnectionState.PAIRED, `Successfully paired with ${this.activeTv.name}`);
+            events.onPairingSuccess(this.activeTv, this.activeClientCerts);
+          }
+          if (this.pendingResolve) this.pendingResolve(true);
+        } else {
+          this.stage = PairingStage.FAILED;
+          events.onLog('error', `[PairingService] Invalid pairing PIN entered`);
+          events.onStateChange(ConnectionState.PAIRING_FAILED, 'Invalid pairing PIN entered. Please try again.');
+          if (this.activeTv) events.onPairingError(this.activeTv, 'Incorrect PIN or pairing expired');
+          if (this.pendingResolve) this.pendingResolve(false);
+        }
+        this.cleanup();
+        break;
+      }
+
+      default:
+        events.onLog('debug', `[PairingService] Unhandled packet during stage ${this.stage}`);
+        break;
     }
   }
 
@@ -196,10 +232,11 @@ export class PairingService {
     try {
       const secretHash = this.certManager.calculatePairingSecret(
         this.activeClientCerts.certPem,
-        this.serverCertPem || this.activeClientCerts.certPem,
+        this.serverCertDer || this.serverCertPem || this.activeClientCerts.certPem,
         pinCode
       );
 
+      this.stage = PairingStage.WAITING_SECRET_ACK;
       events.onLog('debug', `[PairingService] Transmitting PairingSecret payload (${secretHash.length} bytes)`);
       const secretPacket = ATVRemoteV2Messages.buildPairingSecret(secretHash);
       this.currentSocket.write(secretPacket);
@@ -224,7 +261,7 @@ export class PairingService {
       }
       this.currentSocket = null;
     }
-    this.isWaitingForPin = false;
+    this.stage = PairingStage.IDLE;
     this.pendingResolve = null;
     this.pendingReject = null;
   }

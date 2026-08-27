@@ -116,8 +116,41 @@ export class ProtobufReader {
     this.offset = 0;
   }
 
+  public getOffset(): number {
+    return this.offset;
+  }
+
   public hasMore(): boolean {
     return this.offset < this.buffer.length;
+  }
+
+  public static unframePackets(incomingBuffer: Buffer): { packets: Buffer[]; remaining: Buffer } {
+    const packets: Buffer[] = [];
+    let current = incomingBuffer;
+
+    while (current.length > 0) {
+      const reader = new ProtobufReader(current);
+      if (!reader.hasMore()) break;
+
+      try {
+        const length = Number(reader.readVarint());
+        const headerLen = reader.getOffset();
+
+        if (current.length < headerLen + length) {
+          // Partial packet, wait for more data
+          break;
+        }
+
+        const payload = current.slice(headerLen, headerLen + length);
+        packets.push(payload);
+        current = current.slice(headerLen + length);
+      } catch {
+        // Incomplete varint, wait for more data
+        break;
+      }
+    }
+
+    return { packets, remaining: current };
   }
 
   public readVarint(): bigint {

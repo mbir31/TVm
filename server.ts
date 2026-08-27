@@ -169,6 +169,25 @@ async function startServer() {
     res.json(tv);
   });
 
+  app.post('/api/bridge/scan/rescan', (req, res) => {
+    const tvs = tvmService.triggerRescan();
+    res.json({ success: true, count: tvs.length, tvs });
+  });
+
+  app.post('/api/bridge/scan/subnet', async (req, res) => {
+    const { subnetPrefix } = req.body;
+    if (!subnetPrefix) return res.status(400).json({ error: 'subnetPrefix is required (e.g. 192.168.1)' });
+    const found = await tvmService.scanSubnet(subnetPrefix);
+    res.json({ success: true, count: found.length, tvs: found });
+  });
+
+  app.post('/api/bridge/scan/probe', async (req, res) => {
+    const { host } = req.body;
+    if (!host) return res.status(400).json({ error: 'host IP is required' });
+    const isOpen = await tvmService.probeTV(host);
+    res.json({ host, isOpen });
+  });
+
   app.post('/api/bridge/forget', (req, res) => {
     const { tvId } = req.body;
     if (!tvId) return res.status(400).json({ error: 'tvId is required' });

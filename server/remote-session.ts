@@ -96,16 +96,10 @@ export class RemoteSession {
           incomingBuffer = Buffer.concat([incomingBuffer, chunk]);
 
           try {
-            const reader = new ProtobufReader(incomingBuffer);
-            if (!reader.hasMore()) return;
+            const { packets, remaining } = ProtobufReader.unframePackets(incomingBuffer);
+            incomingBuffer = remaining;
 
-            const length = Number(reader.readVarint());
-            const totalRequired = incomingBuffer.length - (incomingBuffer.length - reader['offset']) + length;
-
-            if (incomingBuffer.length >= totalRequired) {
-              const payload = incomingBuffer.slice(reader['offset'], reader['offset'] + length);
-              incomingBuffer = incomingBuffer.slice(reader['offset'] + length);
-
+            for (const payload of packets) {
               this.handleIncomingMessage(payload);
             }
           } catch (err) {

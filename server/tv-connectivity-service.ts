@@ -357,6 +357,28 @@ export class TVConnectivityService {
     return tv;
   }
 
+  public triggerRescan(): TVDevice[] {
+    this.log('info', 'discovery', 'Triggering active Wi-Fi mDNS rescan query');
+    const tvs = this.discoveryService.triggerRescan();
+    for (const tv of tvs) {
+      this.notifyTVDiscovered(tv);
+    }
+    return tvs;
+  }
+
+  public async scanSubnet(subnetPrefix: string): Promise<TVDevice[]> {
+    this.log('info', 'discovery', `Initiating TCP port 6467 probe scan across subnet: ${subnetPrefix}`);
+    const found = await this.discoveryService.scanSubnet(subnetPrefix, (tv) => {
+      this.notifyTVDiscovered(tv);
+    });
+    this.log('info', 'discovery', `Subnet scan complete. Found ${found.length} device(s).`);
+    return found;
+  }
+
+  public async probeTV(host: string): Promise<boolean> {
+    return this.discoveryService.probeTV(host);
+  }
+
   public forgetTV(tvId: string): boolean {
     this.certManager.removeDeviceCredentials(tvId);
     this.pairedTvs.delete(tvId);

@@ -171,43 +171,54 @@ export class CertificateManager {
 
   /**
    * Computes the SHA-256 pairing secret expected by Android TV Remote v2:
-   * secret = SHA-256(client_cert_der + server_cert_der + pin_bytes_or_alphanumeric_hex)
+   * secret = SHA-256(client_cert_der + server_cert_der + pin_bytes)
    */
   public calculatePairingSecret(
-    clientCertPem: string,
-    serverCertPem: string,
+    clientCertPemOrDer: string | Buffer,
+    serverCertPemOrDer: string | Buffer,
     pinCode: string
   ): Buffer {
     try {
-      const clientCert = forge.pki.certificateFromPem(clientCertPem);
-      const serverCert = forge.pki.certificateFromPem(serverCertPem);
+      let clientDer: Buffer;
+      let serverDer: Buffer;
 
-      const clientDer = Buffer.from(forge.asn1.toDer(forge.pki.certificateToAsn1(clientCert)).getBytes(), 'binary');
-      const serverDer = Buffer.from(forge.asn1.toDer(forge.pki.certificateToAsn1(serverCert)).getBytes(), 'binary');
+      if (Buffer.isBuffer(clientCertPemOrDer)) {
+        clientDer = clientCertPemOrDer;
+      } else {
+        const clientCert = forge.pki.certificateFromPem(clientCertPemOrDer);
+        clientDer = Buffer.from(forge.asn1.toDer(forge.pki.certificateToAsn1(clientCert)).getBytes(), 'binary');
+      }
+
+      if (Buffer.isBuffer(serverCertPemOrDer)) {
+        serverDer = serverCertPemOrDer;
+      } else {
+        const serverCert = forge.pki.certificateFromPem(serverCertPemOrDer);
+        serverDer = Buffer.from(forge.asn1.toDer(forge.pki.certificateToAsn1(serverCert)).getBytes(), 'binary');
+      }
 
       // Clean PIN code (hex or alphanumeric)
       const cleanPin = pinCode.trim().toUpperCase();
-      let pinBuffer: Buffer;
 
-      // Android TV Remote v2 standard: PIN displayed as 6 alphanumeric characters or 6 hex digits
-      // e.g. "A1B2C3" or "123456"
-      // In Android TV Remote v2 protocol, if the PIN is hex (contains only 0-9, A-F and length is even),
-      // we check both raw ASCII PIN and hex-decoded bytes.
+      // Android TV Remote v2 standard:
+      // If PIN is 6 hex characters (e.g. "4F1A8B" or "A1B2C3"):
+      // In the official Google pairing protocol:
+      // pin_bytes = bytes.fromhex(pin[2:]) or bytes.fromhex(pin)
+      let pinBuffer: Buffer;
       if (/^[0-9A-F]{6}$/i.test(cleanPin)) {
-        // First 2 bytes (or 4 bytes) hash calculation
-        const pinHexBuffer = Buffer.from(cleanPin, 'hex');
-        const hash = crypto.createHash('sha256');
-        hash.update(clientDer);
-        hash.update(serverDer);
-        hash.update(pinHexBuffer);
-        return hash.digest();
+        // Standard Android TV Remote v2: 6 hex digits -> decoded 3 bytes or 2 bytes
+        // In most Google TV devices, the last 4 hex characters (2 bytes) or full 3 bytes are used
+        pinBuffer = Buffer.from(cleanPin.slice(2), 'hex');
+      } else if (/^[0-9A-F]{4}$/i.test(cleanPin)) {
+        pinBuffer = Buffer.from(cleanPin, 'hex');
       } else {
-        const hash = crypto.createHash('sha256');
-        hash.update(clientDer);
-        hash.update(serverDer);
-        hash.update(Buffer.from(cleanPin, 'utf-8'));
-        return hash.digest();
+        pinBuffer = Buffer.from(cleanPin, 'utf-8');
       }
+
+      const hash = crypto.createHash('sha256');
+      hash.update(clientDer);
+      hash.update(serverDer);
+      hash.update(pinBuffer);
+      return hash.digest();
     } catch (err) {
       console.error('[CertificateManager] Error calculating pairing secret:', err);
       // Fallback hash

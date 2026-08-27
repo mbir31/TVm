@@ -195,6 +195,29 @@ export class BridgeClient {
     return res.json();
   }
 
+  public async rescan(): Promise<{ success: boolean; count: number; tvs: TVDevice[] }> {
+    const res = await fetch('/api/bridge/scan/rescan', { method: 'POST' });
+    return res.json();
+  }
+
+  public async scanSubnet(subnetPrefix: string): Promise<{ success: boolean; count: number; tvs: TVDevice[] }> {
+    const res = await fetch('/api/bridge/scan/subnet', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ subnetPrefix }),
+    });
+    return res.json();
+  }
+
+  public async probeHost(host: string): Promise<{ host: string; isOpen: boolean }> {
+    const res = await fetch('/api/bridge/scan/probe', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ host }),
+    });
+    return res.json();
+  }
+
   public async forgetTV(tvId: string): Promise<{ success: boolean }> {
     const res = await fetch('/api/bridge/forget', {
       method: 'POST',

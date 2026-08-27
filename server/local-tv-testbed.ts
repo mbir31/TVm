@@ -95,14 +95,10 @@ export class LocalTVTestbed {
           incomingBuffer = Buffer.concat([incomingBuffer, chunk]);
 
           try {
-            const reader = new ProtobufReader(incomingBuffer);
-            if (!reader.hasMore()) return;
+            const { packets, remaining } = ProtobufReader.unframePackets(incomingBuffer);
+            incomingBuffer = remaining;
 
-            const length = Number(reader.readVarint());
-            if (incomingBuffer.length >= reader['offset'] + length) {
-              const payload = incomingBuffer.slice(reader['offset'], reader['offset'] + length);
-              incomingBuffer = incomingBuffer.slice(reader['offset'] + length);
-
+            for (const payload of packets) {
               this.handlePairingPacket(payload, socket, events);
             }
           } catch (err) {
@@ -130,20 +126,11 @@ export class LocalTVTestbed {
           incomingBuffer = Buffer.concat([incomingBuffer, chunk]);
 
           try {
-            while (incomingBuffer.length > 0) {
-              const reader = new ProtobufReader(incomingBuffer);
-              if (!reader.hasMore()) break;
+            const { packets, remaining } = ProtobufReader.unframePackets(incomingBuffer);
+            incomingBuffer = remaining;
 
-              const length = Number(reader.readVarint());
-              const offset = reader['offset'];
-
-              if (incomingBuffer.length >= offset + length) {
-                const payload = incomingBuffer.slice(offset, offset + length);
-                incomingBuffer = incomingBuffer.slice(offset + length);
-                this.handleRemotePacket(payload, socket, events);
-              } else {
-                break;
-              }
+            for (const payload of packets) {
+              this.handleRemotePacket(payload, socket, events);
             }
           } catch (err) {
             events.onLog('warn', '[Testbed] Parse error on remote socket:', { err: String(err) });
