@@ -214,9 +214,9 @@ export const TVManagerModal: React.FC<TVManagerModalProps> = ({
               <ShieldCheck className="w-5 h-5 text-blue-400" />
               <span>Enter TV Pairing Code</span>
             </div>
-            <p className="text-xs text-gray-300">
-              Please enter the 6-character code currently displayed on{' '}
-              <strong className="text-white">{pairingPrompt.tv.name}</strong>.
+            <p className="text-xs text-gray-300 leading-relaxed">
+              Look at your TV screen. Enter the 6-character pairing code shown on{' '}
+              <strong className="text-white">{pairingPrompt.tv.name}</strong>:
             </p>
 
             {pairingPrompt.testbedPin && (

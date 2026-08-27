@@ -73,22 +73,34 @@ export class DiscoveryService {
         this.bonjour = new Bonjour();
       }
 
+      // Listen primarily for genuine Android TV Remote v2 services
       this.bonjour.find({ type: 'androidtvremote2' }, (service) => {
-        this.handleDiscoveredService(service);
+        this.handleDiscoveredService(service, false);
       });
 
       // Also listen for legacy androidtv services
       this.bonjour.find({ type: 'androidtv' }, (service) => {
-        this.handleDiscoveredService(service);
+        this.handleDiscoveredService(service, false);
       });
 
-      // Also listen for googlecast services to identify Google TV hostnames
-      this.bonjour.find({ type: 'googlecast' }, (service) => {
+      // For googlecast services: do NOT assume Remote v2 is available.
+      // Asynchronously probe port 6467 first before registering as Remote v2 TV.
+      this.bonjour.find({ type: 'googlecast' }, async (service) => {
+        const host = service.addresses?.[0] || service.host || service.referer?.address;
+        if (!host) return;
         const fn = service.txt?.fn || service.name || '';
         const md = service.txt?.md || '';
-        // If device looks like a Google TV or Android TV
-        if (fn.toLowerCase().includes('tv') || md.toLowerCase().includes('chromecast with google tv') || md.toLowerCase().includes('bravia')) {
-          this.handleDiscoveredService(service, true);
+        const isTvCandidate = fn.toLowerCase().includes('tv') || 
+                              md.toLowerCase().includes('chromecast with google tv') || 
+                              md.toLowerCase().includes('bravia') ||
+                              md.toLowerCase().includes('shield');
+        
+        if (isTvCandidate) {
+          // Verify genuine Remote v2 service port before adding
+          const hasRemoteV2 = await this.probeTV(host, PAIRING_PORT, 1500);
+          if (hasRemoteV2) {
+            this.handleDiscoveredService(service, false);
+          }
         }
       });
 

@@ -6,3 +6,8 @@ coverage/
 *.log
 .env*
 !.env.example
+.tvm-credentials.json
+*.pem
+*.key
+*.crt
+

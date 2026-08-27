@@ -59,23 +59,30 @@ export class TVConnectivityService {
   private async init(): Promise<void> {
     this.log('info', 'system', 'Initializing TVm Local Connectivity Core & Protocol Engine');
 
-    // 1. Start Local Testbed Server (allows immediate live validation on local loopback)
-    const testbedDevice = await this.testbed.start({
-      onPinGenerated: (tvId, pin) => {
-        this.log('info', 'pairing', `Testbed TV generated pairing PIN: ${pin}`);
-        if (this.activeTv?.id === tvId) {
-          this.notifyPinPrompt(this.activeTv, pin);
-        }
-      },
-      onCommandReceived: (tvId, cmd, details) => {
-        this.log('info', 'testbed', `Testbed TV executed command: ${cmd}`, details);
-      },
-      onLog: (lvl, msg, data) => {
-        this.log(lvl, 'testbed', msg, data);
-      },
-    });
+    // 1. Local Testbed Server is isolated behind explicit opt-in (ENABLE_LOCAL_TESTBED=true)
+    // In production or standard mode, testbed never registers or appears in discovery list.
+    const isTestbedExplicitlyEnabled = process.env.ENABLE_LOCAL_TESTBED === 'true' || process.env.NODE_ENV === 'test';
+    if (isTestbedExplicitlyEnabled) {
+      const testbedDevice = await this.testbed.start({
+        onPinGenerated: (tvId, pin) => {
+          this.log('info', 'pairing', `[Dev Testbed] Virtual TV generated pairing PIN: ${pin}`);
+          if (this.activeTv?.id === tvId) {
+            this.notifyPinPrompt(this.activeTv, pin);
+          }
+        },
+        onCommandReceived: (tvId, cmd, details) => {
+          this.log('info', 'testbed', `[Dev Testbed] Virtual TV executed command: ${cmd}`, details);
+        },
+        onLog: (lvl, msg, data) => {
+          this.log(lvl, 'testbed', msg, data);
+        },
+      });
 
-    this.discoveryService.registerTV(testbedDevice);
+      this.discoveryService.registerTV(testbedDevice);
+      this.log('warn', 'system', 'Development LocalTVTestbed is active on loopback ports 16467/16466 (ENABLE_LOCAL_TESTBED=true)');
+    } else {
+      this.log('info', 'system', 'Production mode: LocalTVTestbed disabled. All discovery and pairing targets real Wi-Fi network.');
+    }
 
     // 2. Start mDNS discovery on local network
     this.discoveryService.startDiscovery({
@@ -237,7 +244,7 @@ export class TVConnectivityService {
     return this.pairingService.startPairing(tv, {
       onStateChange: (st, msg) => this.transitionState(st, msg),
       onPinPrompt: (targetTv) => {
-        const pin = this.testbed.getActivePin();
+        const pin = targetTv.isTestbed ? this.testbed.getActivePin() : undefined;
         this.notifyPinPrompt(targetTv, pin || undefined);
       },
       onPairingSuccess: (targetTv) => {
